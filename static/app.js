@@ -1,279 +1,279 @@
 'use strict';
 
-// ── Backend URL detection ───────────────────────────────────────────────────
-// When hosted on GitHub Pages the user must supply the Replit backend URL.
-// When running locally the same origin is used.
-const IS_GITHUB_PAGES = location.hostname.includes('github.io') ||
-                        location.hostname.includes('github.com');
+// ── Config ─────────────────────────────────────────────────────────────────
+const SUPABASE_URL      = 'https://sdpjpgnwztqoncismayd.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_D5bNKo8DSUzUmdiq9_TuZA_xGB66_Ii';
+const GITHUB_OWNER      = 'fa78383012731al-collab';
+const GITHUB_REPO       = 'background1';
+const BUCKET_INPUT      = 'pptx-inputs';
 
-function getBackendBase() {
-  if (!IS_GITHUB_PAGES) return '';           // same-origin (local dev / Replit)
-  const saved = localStorage.getItem('backendUrl') || '';
-  return saved.replace(/\/$/, '');
-}
+// ── Supabase helpers ───────────────────────────────────────────────────────
+const sb = {
+  headers: {
+    'apikey':        SUPABASE_ANON_KEY,
+    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+  },
 
-function api(path) {
-  return getBackendBase() + path;
+  async uploadFile(path, file) {
+    const r = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${BUCKET_INPUT}/${path}`,
+      {
+        method: 'POST',
+        headers: { ...this.headers, 'x-upsert': 'true', 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      }
+    );
+    if (!r.ok) throw new Error(`Storage upload failed: ${r.status} ${await r.text()}`);
+    return await r.json();
+  },
+
+  async createJob(data) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/jobs`, {
+      method: 'POST',
+      headers: { ...this.headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(`Job create failed: ${r.status} ${await r.text()}`);
+    const rows = await r.json();
+    return rows[0];
+  },
+
+  async getJob(jobId) {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/jobs?id=eq.${jobId}&select=*`,
+      { headers: this.headers }
+    );
+    if (!r.ok) throw new Error(`Job fetch failed: ${r.status}`);
+    const rows = await r.json();
+    return rows[0] || null;
+  },
+};
+
+// ── GitHub Actions trigger ─────────────────────────────────────────────────
+async function triggerGitHubAction(jobId, filePath) {
+  // We call our Supabase Edge Function which holds the GITHUB_TOKEN securely
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/trigger-action`, {
+    method: 'POST',
+    headers: { ...sb.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: jobId, file_path: filePath }),
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`Trigger failed: ${r.status} — ${txt}`);
+  }
+  return await r.json();
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
-const state = { jobId: null, polling: null };
+let state = { jobId: null, polling: null, startTime: null };
 
-// ── DOM refs ───────────────────────────────────────────────────────────────
+// ── DOM ────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const dropZone     = $('drop-zone');
 const fileInput    = $('file-input');
 const fileNameEl   = $('file-name');
 const btnUpload    = $('btn-upload');
-const btnProcess   = $('btn-process');
-const btnGithub    = $('btn-github');
-const btnRetry     = $('btn-retry');
-const btnClearLog  = $('btn-clear-log');
-const secConfig    = $('sec-config');
 const secProcess   = $('sec-process');
 const secResults   = $('sec-results');
-const secGithub    = $('sec-github');
 const tagFilename  = $('tag-filename');
-const progressWrap = $('progress-wrap');
+const tagStatus    = $('tag-status');
 const progressFill = $('progress-fill');
 const progressPct  = $('progress-pct');
-const logBox       = $('log-box');
 const logContent   = $('log-content');
+const logEta       = $('log-eta');
 const statsRow     = $('stats-row');
 const previewsGrid = $('previews-grid');
 const downloadRow  = $('download-row');
 const errorBanner  = $('error-banner');
 const errorMsg     = $('error-msg');
-const githubResult = $('github-result');
-
-// ── Show backend config section only on GitHub Pages ──────────────────────
-if (IS_GITHUB_PAGES && secConfig) {
-  secConfig.style.display = '';
-  const inp = $('backend-url-input');
-  if (inp) {
-    inp.value = localStorage.getItem('backendUrl') || '';
-    inp.addEventListener('change', () => {
-      localStorage.setItem('backendUrl', inp.value.trim());
-    });
-  }
-  const btnSave = $('btn-save-backend');
-  if (btnSave) {
-    btnSave.addEventListener('click', () => {
-      const val = ($('backend-url-input').value || '').trim().replace(/\/$/, '');
-      localStorage.setItem('backendUrl', val);
-      btnSave.textContent = '✅ تم الحفظ';
-      setTimeout(() => { btnSave.textContent = 'حفظ'; }, 2000);
-    });
-  }
-}
+const btnRetry     = $('btn-retry');
+const btnNew       = $('btn-new');
 
 // ── File selection ─────────────────────────────────────────────────────────
 let selectedFile = null;
-
-function setFile(file) {
-  if (!file || !file.name.toLowerCase().endsWith('.pptx')) {
-    alert('يُقبل فقط ملف .pptx');
-    return;
-  }
-  selectedFile = file;
-  fileNameEl.textContent = file.name;
+function setFile(f) {
+  if (!f || !f.name.toLowerCase().endsWith('.pptx')) { alert('يُقبل فقط ملف .pptx'); return; }
+  selectedFile = f;
+  fileNameEl.textContent = f.name;
   btnUpload.disabled = false;
 }
-
 fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
 dropZone.addEventListener('click',     () => fileInput.click());
-dropZone.addEventListener('dragover',  e  => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
+  e.preventDefault(); dropZone.classList.remove('drag-over');
   if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
 });
 
-// ── Upload ─────────────────────────────────────────────────────────────────
+// ── Upload & trigger ───────────────────────────────────────────────────────
 btnUpload.addEventListener('click', async () => {
   if (!selectedFile) return;
-  if (IS_GITHUB_PAGES && !getBackendBase()) {
-    alert('أدخل رابط الخادم (Backend URL) أولاً وانقر حفظ.');
-    secConfig.scrollIntoView({ behavior: 'smooth' });
-    return;
-  }
-
   btnUpload.disabled = true;
   btnUpload.innerHTML = '<span class="spinner"></span> جارٍ الرفع…';
 
-  const form = new FormData();
-  form.append('file', selectedFile);
-
   try {
-    const res  = await fetch(api('/api/upload'), { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    // 1. Upload to Supabase Storage
+    const jobId    = crypto.randomUUID();
+    const filePath = `${jobId}/${selectedFile.name}`;
+    setProgress(5, 'رفع الملف إلى Supabase Storage…');
+    await sb.uploadFile(filePath, selectedFile);
 
-    state.jobId = data.job_id;
-    tagFilename.textContent = data.filename;
+    // 2. Create job record in DB
+    setProgress(10, 'إنشاء سجل الوظيفة…');
+    const job = await sb.createJob({
+      id:          jobId,
+      status:      'queued',
+      progress:    10,
+      filename:    selectedFile.name,
+      file_path:   filePath,
+      log:         'Queued. Triggering GitHub Actions…',
+    });
+
+    state.jobId    = job.id;
+    state.startTime = Date.now();
+    tagFilename.textContent = selectedFile.name;
+
+    // 3. Show processing section
     secProcess.style.display = '';
     secProcess.scrollIntoView({ behavior: 'smooth' });
-    btnUpload.textContent = '⬆ رفع الملف';
-    btnUpload.disabled = false;
-  } catch (err) {
-    alert('فشل الرفع: ' + err.message);
-    btnUpload.disabled = false;
-    btnUpload.textContent = '⬆ رفع الملف';
-  }
-});
 
-// ── Process ────────────────────────────────────────────────────────────────
-btnProcess.addEventListener('click', async () => {
-  if (!state.jobId) return;
-  resetResults();
-  btnProcess.disabled = true;
-  btnProcess.innerHTML = '<span class="spinner"></span> جارٍ التحليل…';
-  progressWrap.style.display = '';
-  logBox.style.display = '';
-  setProgress(0);
+    // 4. Trigger GitHub Actions via Edge Function
+    setProgress(12, 'تشغيل GitHub Actions…');
+    tagStatus.textContent = '🚀 GitHub Actions يعمل…';
+    tagStatus.className   = 'tag tag-blue';
 
-  try {
-    const res  = await fetch(api(`/api/process/${state.jobId}`), { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Process failed');
-    startPolling();
+    await triggerGitHubAction(job.id, filePath);
+    setProgress(15, 'GitHub Actions انطلق! جارٍ المعالجة…');
+
+    // 5. Start polling
+    startPolling(job.id);
+
   } catch (err) {
     showError(err.message);
-    btnProcess.disabled = false;
-    btnProcess.textContent = '▶ بدء التحليل';
+    btnUpload.disabled = false;
+    btnUpload.textContent = '⬆ رفع وبدء المعالجة';
   }
 });
 
 // ── Polling ────────────────────────────────────────────────────────────────
-function startPolling() {
+function startPolling(jobId) {
   clearInterval(state.polling);
-  state.polling = setInterval(pollStatus, 1500);
+  state.polling = setInterval(() => pollJob(jobId), 3000);
 }
 
-async function pollStatus() {
-  if (!state.jobId) return;
+async function pollJob(jobId) {
   try {
-    const res  = await fetch(api(`/api/status/${state.jobId}`));
-    const data = await res.json();
-    if (!res.ok) return;
-    updateLogs(data.logs || []);
-    setProgress(data.progress || 0);
-    if (data.status === 'done') {
+    const job = await sb.getJob(jobId);
+    if (!job) return;
+
+    setProgress(job.progress || 0, job.log || '');
+
+    const elapsed = Math.round((Date.now() - state.startTime) / 1000);
+    logEta.textContent = `⏱ ${elapsed}s`;
+
+    // Update status badge
+    const statusMap = {
+      queued:     ['⏳ في قائمة الانتظار', 'tag-blue'],
+      processing: ['⚙ جارٍ المعالجة…',    'tag-blue'],
+      done:       ['✅ اكتمل',             'tag-green'],
+      error:      ['❌ خطأ',               'tag-red'],
+    };
+    const [label, cls] = statusMap[job.status] || ['…', 'tag-blue'];
+    tagStatus.textContent = label;
+    tagStatus.className   = `tag ${cls}`;
+
+    if (job.status === 'done') {
       clearInterval(state.polling);
-      renderResults(data);
-      btnProcess.disabled = false;
-      btnProcess.textContent = '▶ إعادة التحليل';
-    } else if (data.status === 'error') {
+      renderResults(job);
+    } else if (job.status === 'error') {
       clearInterval(state.polling);
-      showError(data.error || 'حدث خطأ غير معروف');
-      btnProcess.disabled = false;
-      btnProcess.textContent = '▶ بدء التحليل';
+      showError(job.log || 'حدث خطأ غير معروف');
     }
   } catch (_) {}
 }
 
-// ── Results rendering ──────────────────────────────────────────────────────
-function renderResults(data) {
+// ── Results ────────────────────────────────────────────────────────────────
+function renderResults(job) {
   secResults.style.display = '';
   secResults.scrollIntoView({ behavior: 'smooth' });
 
   statsRow.innerHTML = `
-    <div class="stat-card"><div class="stat-val">${data.slide_count}</div><div class="stat-lbl">شريحة</div></div>
-    <div class="stat-card"><div class="stat-val">${data.diagram_count}</div><div class="stat-lbl">مخطط مُعاد بناؤه</div></div>
+    <div class="stat-card"><div class="stat-val">${job.slide_count || 0}</div><div class="stat-lbl">شريحة</div></div>
+    <div class="stat-card"><div class="stat-val">${job.diagram_count || 0}</div><div class="stat-lbl">مخطط مُعاد بناؤه</div></div>
   `;
 
+  // Previews
   previewsGrid.innerHTML = '';
-  (data.previews || []).forEach(p => {
+  let previews = [];
+  try { previews = JSON.parse(job.result_previews || '[]'); } catch (_) {}
+  previews.forEach(p => {
+    if (!p.url) return;
     const card = document.createElement('div');
     card.className = 'preview-card';
     card.innerHTML = `
-      <img src="${api(p.url)}" alt="مخطط الشريحة ${p.slide}" loading="lazy" />
+      <img src="${p.url}" alt="شريحة ${p.slide}" loading="lazy" />
       <div class="preview-card-info">
         <strong>شريحة ${p.slide} — ${p.type}</strong>
-        ${p.description}
+        ${p.description || ''}
       </div>`;
     previewsGrid.appendChild(card);
   });
 
+  // Downloads
   downloadRow.innerHTML = '';
-  const dl = data.downloads || {};
-  if (dl.pptx) downloadRow.appendChild(makeDownloadBtn('⬇ PPTX', api(dl.pptx), 'pptx'));
-  if (dl.svg)  downloadRow.appendChild(makeDownloadBtn('⬇ SVG',  api(dl.svg),  'svg'));
-  if (dl.png)  downloadRow.appendChild(makeDownloadBtn('⬇ PNG',  api(dl.png),  'png'));
-  if (!dl.pptx && !dl.svg && !dl.png)
+  if (job.result_pptx) downloadRow.appendChild(mkDl('⬇ PPTX', job.result_pptx, 'pptx'));
+  if (job.result_svg)  downloadRow.appendChild(mkDl('⬇ SVG',  job.result_svg,  'svg'));
+  if (job.result_png)  downloadRow.appendChild(mkDl('⬇ PNG',  job.result_png,  'png'));
+  if (!job.result_pptx && !job.result_svg && !job.result_png)
     downloadRow.innerHTML = '<p style="color:var(--muted)">لم تُكتشف مخططات قابلة لإعادة البناء في هذا الملف.</p>';
-
-  secGithub.style.display = '';
 }
 
-function makeDownloadBtn(label, url, cls) {
+function mkDl(label, url, cls) {
   const a = document.createElement('a');
   a.className = `download-btn ${cls}`;
-  a.href = url;
-  a.textContent = label;
-  a.download = '';
+  a.href = url; a.textContent = label; a.target = '_blank';
   return a;
 }
 
-// ── GitHub push ────────────────────────────────────────────────────────────
-btnGithub.addEventListener('click', async () => {
-  const repoUrl = $('repo-url').value.trim();
-  if (!repoUrl) { alert('أدخل رابط المستودع'); return; }
-  btnGithub.disabled = true;
-  btnGithub.innerHTML = '<span class="spinner"></span> جارٍ الرفع…';
-  githubResult.className = 'github-result';
-  githubResult.textContent = '';
-  try {
-    const res  = await fetch(api(`/api/github-push/${state.jobId}`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repo_url: repoUrl }),
-    });
-    const data = await res.json();
-    githubResult.className = `github-result ${data.success ? 'ok' : 'fail'}`;
-    githubResult.textContent = (data.success ? '✅ ' : '❌ ') + data.message;
-  } catch (err) {
-    githubResult.className = 'github-result fail';
-    githubResult.textContent = '❌ ' + err.message;
-  } finally {
-    btnGithub.disabled = false;
-    btnGithub.textContent = '🚀 رفع إلى GitHub';
-  }
-});
-
-// ── Retry ──────────────────────────────────────────────────────────────────
-btnRetry.addEventListener('click', () => { errorBanner.style.display = 'none'; btnProcess.click(); });
-
 // ── Helpers ────────────────────────────────────────────────────────────────
-function setProgress(pct) {
+let lastLog = '';
+function setProgress(pct, log) {
   progressFill.style.width = pct + '%';
   progressPct.textContent  = pct + '%';
-}
-
-let lastLogLen = 0;
-function updateLogs(logs) {
-  if (logs.length === lastLogLen) return;
-  lastLogLen = logs.length;
-  logContent.textContent = logs.join('\n');
-  logContent.scrollTop   = logContent.scrollHeight;
+  if (log && log !== lastLog) {
+    lastLog = log;
+    logContent.textContent += (logContent.textContent ? '\n' : '') + log;
+    logContent.scrollTop    = logContent.scrollHeight;
+  }
 }
 
 function showError(msg) {
   errorBanner.style.display = '';
   errorMsg.textContent = msg;
   secResults.style.display = '';
-  secResults.scrollIntoView({ behavior: 'smooth' });
+  tagStatus.textContent = '❌ خطأ';
+  tagStatus.className   = 'tag tag-red';
 }
 
-function resetResults() {
-  statsRow.innerHTML = '';
-  previewsGrid.innerHTML = '';
-  downloadRow.innerHTML  = '';
+btnRetry.addEventListener('click', () => {
   errorBanner.style.display = 'none';
-  githubResult.textContent  = '';
-  lastLogLen = 0;
-  logContent.textContent = '';
-}
+  btnUpload.disabled  = false;
+  btnUpload.textContent = '⬆ رفع وبدء المعالجة';
+  secProcess.style.display  = 'none';
+  secResults.style.display  = 'none';
+});
 
-btnClearLog.addEventListener('click', () => { logContent.textContent = ''; lastLogLen = 0; });
+btnNew.addEventListener('click', () => {
+  clearInterval(state.polling);
+  state = { jobId: null, polling: null, startTime: null };
+  selectedFile = null;
+  fileNameEl.textContent = 'لم يُختر ملف بعد';
+  btnUpload.disabled = true;
+  btnUpload.textContent = '⬆ رفع وبدء المعالجة';
+  logContent.textContent = '';
+  lastLog = '';
+  secProcess.style.display = 'none';
+  secResults.style.display = 'none';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
