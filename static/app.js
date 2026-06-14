@@ -52,7 +52,7 @@ const sb = {
 // ── GitHub Actions trigger ─────────────────────────────────────────────────
 async function triggerGitHubAction(jobId, filePath) {
   // We call our Supabase Edge Function which holds the GITHUB_TOKEN securely
-  const r = await fetch(`${SUPABASE_URL}/functions/v1/trigger-action`, {
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/rapid-responder`, {
     method: 'POST',
     headers: { ...sb.headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ job_id: jobId, file_path: filePath }),
