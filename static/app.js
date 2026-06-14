@@ -23,8 +23,9 @@ const sb = {
         body: file,
       }
     );
-    if (!r.ok) throw new Error(`Storage upload failed: ${r.status} ${await r.text()}`);
-    return await r.json();
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`Storage upload failed: ${r.status} ${txt}`);
+    try { return JSON.parse(txt); } catch(_) { return { ok: true }; }
   },
 
   async createJob(data) {
@@ -33,9 +34,12 @@ const sb = {
       headers: { ...this.headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
       body: JSON.stringify(data),
     });
-    if (!r.ok) throw new Error(`Job create failed: ${r.status} ${await r.text()}`);
-    const rows = await r.json();
-    return rows[0];
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`Job create failed: ${r.status} ${txt}`);
+    try {
+      const rows = JSON.parse(txt);
+      return Array.isArray(rows) ? rows[0] : rows;
+    } catch(_) { return data; }
   },
 
   async getJob(jobId) {
