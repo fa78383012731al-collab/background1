@@ -1,0 +1,255 @@
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+  jobId:    null,
+  polling:  null,
+};
+
+// ── DOM refs ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const dropZone    = $('drop-zone');
+const fileInput   = $('file-input');
+const fileNameEl  = $('file-name');
+const btnUpload   = $('btn-upload');
+const btnProcess  = $('btn-process');
+const btnGithub   = $('btn-github');
+const btnRetry    = $('btn-retry');
+const btnClearLog = $('btn-clear-log');
+
+const secProcess  = $('sec-process');
+const secResults  = $('sec-results');
+const secGithub   = $('sec-github');
+
+const tagFilename = $('tag-filename');
+const progressWrap = $('progress-wrap');
+const progressFill = $('progress-fill');
+const progressPct  = $('progress-pct');
+const logBox       = $('log-box');
+const logContent   = $('log-content');
+const statsRow     = $('stats-row');
+const previewsGrid = $('previews-grid');
+const downloadRow  = $('download-row');
+const errorBanner  = $('error-banner');
+const errorMsg     = $('error-msg');
+const githubResult = $('github-result');
+
+// ── File selection ─────────────────────────────────────────────────────────
+let selectedFile = null;
+
+function setFile(file) {
+  if (!file || !file.name.toLowerCase().endsWith('.pptx')) {
+    alert('يُقبل فقط ملف .pptx');
+    return;
+  }
+  selectedFile = file;
+  fileNameEl.textContent = file.name;
+  btnUpload.disabled = false;
+}
+
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+});
+
+// ── Upload ─────────────────────────────────────────────────────────────────
+btnUpload.addEventListener('click', async () => {
+  if (!selectedFile) return;
+
+  btnUpload.disabled = true;
+  btnUpload.innerHTML = '<span class="spinner"></span> جارٍ الرفع…';
+
+  const form = new FormData();
+  form.append('file', selectedFile);
+
+  try {
+    const res  = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+
+    state.jobId = data.job_id;
+    tagFilename.textContent = data.filename;
+
+    secProcess.style.display = '';
+    secProcess.scrollIntoView({ behavior: 'smooth' });
+  } catch (err) {
+    alert('فشل الرفع: ' + err.message);
+    btnUpload.disabled = false;
+    btnUpload.textContent = '⬆ رفع الملف';
+  }
+});
+
+// ── Process ────────────────────────────────────────────────────────────────
+btnProcess.addEventListener('click', async () => {
+  if (!state.jobId) return;
+
+  resetResults();
+  btnProcess.disabled = true;
+  btnProcess.innerHTML = '<span class="spinner"></span> جارٍ التحليل…';
+  progressWrap.style.display = '';
+  logBox.style.display = '';
+  setProgress(0);
+
+  try {
+    const res  = await fetch(`/api/process/${state.jobId}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Process failed');
+    startPolling();
+  } catch (err) {
+    showError(err.message);
+    btnProcess.disabled = false;
+    btnProcess.textContent = '▶ بدء التحليل';
+  }
+});
+
+// ── Polling ────────────────────────────────────────────────────────────────
+function startPolling() {
+  clearInterval(state.polling);
+  state.polling = setInterval(pollStatus, 1200);
+}
+
+async function pollStatus() {
+  if (!state.jobId) return;
+  try {
+    const res  = await fetch(`/api/status/${state.jobId}`);
+    const data = await res.json();
+    if (!res.ok) return;
+
+    updateLogs(data.logs || []);
+    setProgress(data.progress || 0);
+
+    if (data.status === 'done') {
+      clearInterval(state.polling);
+      renderResults(data);
+      btnProcess.disabled = false;
+      btnProcess.textContent = '▶ إعادة التحليل';
+    } else if (data.status === 'error') {
+      clearInterval(state.polling);
+      showError(data.error || 'حدث خطأ غير معروف');
+      btnProcess.disabled = false;
+      btnProcess.textContent = '▶ بدء التحليل';
+    }
+  } catch (_) { /* network hiccup — keep polling */ }
+}
+
+// ── Results rendering ──────────────────────────────────────────────────────
+function renderResults(data) {
+  secResults.style.display = '';
+  secResults.scrollIntoView({ behavior: 'smooth' });
+
+  // Stats
+  statsRow.innerHTML = `
+    <div class="stat-card"><div class="stat-val">${data.slide_count}</div><div class="stat-lbl">شريحة</div></div>
+    <div class="stat-card"><div class="stat-val">${data.diagram_count}</div><div class="stat-lbl">مخطط مُعاد بناؤه</div></div>
+  `;
+
+  // Previews
+  previewsGrid.innerHTML = '';
+  (data.previews || []).forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'preview-card';
+    card.innerHTML = `
+      <img src="${p.url}" alt="مخطط الشريحة ${p.slide}" loading="lazy" />
+      <div class="preview-card-info">
+        <strong>شريحة ${p.slide} — ${p.type}</strong>
+        ${p.description}
+      </div>
+    `;
+    previewsGrid.appendChild(card);
+  });
+
+  // Downloads
+  downloadRow.innerHTML = '';
+  const dl = data.downloads || {};
+  if (dl.pptx) downloadRow.appendChild(makeDownloadBtn('⬇ PPTX', dl.pptx, 'pptx'));
+  if (dl.svg)  downloadRow.appendChild(makeDownloadBtn('⬇ SVG',  dl.svg,  'svg'));
+  if (dl.png)  downloadRow.appendChild(makeDownloadBtn('⬇ PNG',  dl.png,  'png'));
+
+  if (!dl.pptx && !dl.svg && !dl.png) {
+    downloadRow.innerHTML = '<p style="color:var(--muted)">لم تُكتشف مخططات قابلة لإعادة البناء في هذا الملف.</p>';
+  }
+
+  // GitHub section
+  secGithub.style.display = '';
+}
+
+function makeDownloadBtn(label, url, cls) {
+  const a = document.createElement('a');
+  a.className = `download-btn ${cls}`;
+  a.href = url;
+  a.textContent = label;
+  a.download = '';
+  return a;
+}
+
+// ── GitHub push ────────────────────────────────────────────────────────────
+btnGithub.addEventListener('click', async () => {
+  const repoUrl = $('repo-url').value.trim();
+  if (!repoUrl) { alert('أدخل رابط المستودع'); return; }
+
+  btnGithub.disabled = true;
+  btnGithub.innerHTML = '<span class="spinner"></span> جارٍ الرفع…';
+  githubResult.className = 'github-result';
+  githubResult.textContent = '';
+
+  try {
+    const res  = await fetch(`/api/github-push/${state.jobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_url: repoUrl }),
+    });
+    const data = await res.json();
+    githubResult.className = `github-result ${data.success ? 'ok' : 'fail'}`;
+    githubResult.textContent = (data.success ? '✅ ' : '❌ ') + data.message;
+  } catch (err) {
+    githubResult.className = 'github-result fail';
+    githubResult.textContent = '❌ ' + err.message;
+  } finally {
+    btnGithub.disabled = false;
+    btnGithub.textContent = '🚀 رفع إلى GitHub';
+  }
+});
+
+// ── Retry ──────────────────────────────────────────────────────────────────
+btnRetry.addEventListener('click', () => {
+  errorBanner.style.display = 'none';
+  btnProcess.click();
+});
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function setProgress(pct) {
+  progressFill.style.width = pct + '%';
+  progressPct.textContent  = pct + '%';
+}
+
+let lastLogLen = 0;
+function updateLogs(logs) {
+  if (logs.length === lastLogLen) return;
+  lastLogLen = logs.length;
+  logContent.textContent = logs.join('\n');
+  logContent.scrollTop = logContent.scrollHeight;
+}
+
+function showError(msg) {
+  errorBanner.style.display = '';
+  errorMsg.textContent = msg;
+  secResults.style.display = '';
+  secResults.scrollIntoView({ behavior: 'smooth' });
+}
+
+function resetResults() {
+  statsRow.innerHTML = '';
+  previewsGrid.innerHTML = '';
+  downloadRow.innerHTML  = '';
+  errorBanner.style.display = 'none';
+  githubResult.textContent  = '';
+  lastLogLen = 0;
+  logContent.textContent = '';
+}
+
+btnClearLog.addEventListener('click', () => { logContent.textContent = ''; lastLogLen = 0; });
