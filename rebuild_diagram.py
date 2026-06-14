@@ -1,16 +1,13 @@
 """
-rebuild_diagram.py — Reconstruct detected diagrams as editable PowerPoint shapes.
+rebuild_diagram.py — Reconstruct picture-embedded diagrams as editable PowerPoint shapes.
 
-Strategy:
-  1. Run OCR on the image to extract text blocks.
-  2. Detect dominant shapes via OpenCV contour analysis.
-  3. Re-create the diagram using python-pptx primitives:
-       - Rectangles / rounded rectangles for boxes
-       - Ovals for circles
-       - Connectors / lines for arrows
-       - TextBoxes for labels
-  4. Remove (hide) the original flat image from the slide.
-  5. Save a PNG preview of the reconstructed region.
+Improvements over v1:
+  - Original image is KEPT (not deleted) as a reference layer
+  - Better OpenCV shape detection (RETR_LIST + hierarchy filtering)
+  - Arabic text: reshaper+bidi applied correctly
+  - Colours sampled from image region (not just center pixel)
+  - Coordinate mapping uses actual slide EMU dimensions
+  - Text boxes grouped by proximity to avoid clutter
 """
 from __future__ import annotations
 
@@ -18,11 +15,10 @@ import io
 import math
 import os
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 try:
     import pytesseract
@@ -37,41 +33,68 @@ try:
 except ImportError:
     _ARABIC_AVAILABLE = False
 
-from pptx import Presentation
-from pptx.util import Emu, Pt, Inches
+from pptx.util import Emu, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
-from pptx.oxml.ns import qn
-from lxml import etree
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-def _pil_to_cv(img: Image.Image) -> np.ndarray:
-    return cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
-
+# ── Arabic helpers ────────────────────────────────────────────────────────────
 
 def _fix_arabic(text: str) -> str:
+    """Apply arabic_reshaper + bidi so Arabic renders correctly in PPTX."""
+    if not text.strip():
+        return text
     if not _ARABIC_AVAILABLE:
         return text
-    reshaped = arabic_reshaper.reshape(text)
-    return bidi_display(reshaped)
+    try:
+        reshaped = arabic_reshaper.reshape(text)
+        return bidi_display(reshaped)
+    except Exception:
+        return text
 
 
-def _dominant_colors(img: Image.Image, k: int = 5) -> list[tuple[int, int, int]]:
-    """K-means dominant colours from the image."""
-    data = np.array(img.convert("RGB")).reshape(-1, 3).astype(np.float32)
-    if len(data) < k:
-        return [(70, 130, 180)]
+def _is_arabic(text: str) -> bool:
+    return any("\u0600" <= c <= "\u06FF" for c in text)
+
+
+# ── Colour helpers ────────────────────────────────────────────────────────────
+
+def _sample_region_color(cv_img: np.ndarray, x: int, y: int, w: int, h: int) -> tuple[int, int, int]:
+    """Return median colour of a bounding rectangle (BGR→RGB)."""
+    ih, iw = cv_img.shape[:2]
+    x1, y1 = max(0, x), max(0, y)
+    x2, y2 = min(iw, x + w), min(ih, y + h)
+    if x2 <= x1 or y2 <= y1:
+        return (173, 216, 230)
+    region = cv_img[y1:y2, x1:x2]
+    median = np.median(region.reshape(-1, 3), axis=0).astype(int)
+    return (int(median[2]), int(median[1]), int(median[0]))  # BGR→RGB
+
+
+def _accent_color(cv_img: np.ndarray) -> tuple[int, int, int]:
+    """Most common non-white, non-grey colour in the image."""
+    data = cv_img.reshape(-1, 3).astype(np.float32)
+    # Filter out near-white and near-grey
+    mask = ~(
+        (data[:, 0] > 200) & (data[:, 1] > 200) & (data[:, 2] > 200)
+    ) & (
+        (np.max(data, axis=1) - np.min(data, axis=1)) > 30
+    )
+    filtered = data[mask]
+    if len(filtered) < 10:
+        return (70, 130, 180)
+    k = min(3, len(filtered))
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    _, labels, centers = cv2.kmeans(data, k, None, criteria, 3, cv2.KMEANS_RANDOM_CENTERS)
+    _, labels, centers = cv2.kmeans(filtered, k, None, criteria, 3, cv2.KMEANS_RANDOM_CENTERS)
     counts = np.bincount(labels.flatten())
-    sorted_colors = [centers[i] for i in np.argsort(-counts)]
-    return [(int(c[0]), int(c[1]), int(c[2])) for c in sorted_colors]
+    best = centers[np.argmax(counts)].astype(int)
+    return (int(best[2]), int(best[1]), int(best[0]))  # BGR→RGB
 
 
-def _ocr_image(img: Image.Image) -> list[dict]:
-    """Run Tesseract OCR and return word bounding boxes."""
+# ── OCR ───────────────────────────────────────────────────────────────────────
+
+def _ocr_blocks(img: Image.Image) -> list[dict]:
+    """Run Tesseract and return word bounding boxes with text."""
     if not _OCR_AVAILABLE:
         return []
     try:
@@ -82,70 +105,94 @@ def _ocr_image(img: Image.Image) -> list[dict]:
         words = []
         for i, word in enumerate(data["text"]):
             word = word.strip()
-            if not word or data["conf"][i] < 30:
+            if not word or int(data["conf"][i]) < 25:
                 continue
+            fixed = _fix_arabic(word) if _is_arabic(word) else word
             words.append({
-                "text": _fix_arabic(word),
+                "text": fixed,
                 "x": data["left"][i],
                 "y": data["top"][i],
                 "w": data["width"][i],
                 "h": data["height"][i],
+                "is_arabic": _is_arabic(word),
             })
         return words
-    except Exception:
+    except Exception as e:
+        print(f"  OCR error: {e}")
         return []
 
 
-def _detect_shapes(img: Image.Image) -> list[dict]:
-    """
-    Use OpenCV to detect contours → classify as rectangle, circle, or line.
-    Returns list of shape dicts with normalised coords (0-1).
-    """
-    cv_img = _pil_to_cv(img)
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 100)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    edges = cv2.dilate(edges, kernel, iterations=1)
+# ── Shape detection ───────────────────────────────────────────────────────────
 
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
+def _detect_shapes(img: Image.Image, min_area_ratio: float = 0.003) -> list[dict]:
+    """
+    Detect geometric shapes via OpenCV contours.
+    Returns list of shape dicts with normalised (0-1) coordinates.
+    """
+    cv_img = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
     ih, iw = cv_img.shape[:2]
-    shapes = []
+    min_area = iw * ih * min_area_ratio
 
-    for cnt in contours:
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    # Adaptive threshold works better on diagrams than Canny alone
+    thresh = cv2.adaptiveThreshold(gray, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 11, 3)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    thresh = cv2.dilate(thresh, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    shapes = []
+    seen_boxes: list[tuple[int,int,int,int]] = []
+
+    for cnt in sorted(contours, key=cv2.contourArea, reverse=True)[:60]:
         area = cv2.contourArea(cnt)
-        if area < (iw * ih * 0.002):   # skip tiny blobs
+        if area < min_area:
             continue
 
         peri = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+        if peri < 1:
+            continue
+        approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
         x, y, w, h = cv2.boundingRect(cnt)
 
-        # Normalise to 0-1
-        nx, ny, nw, nh = x / iw, y / ih, w / iw, h / ih
+        # Skip nearly-full-image contours (slide border)
+        if w > iw * 0.95 and h > ih * 0.95:
+            continue
 
-        # Circularity
+        # Skip duplicates (overlap > 80%)
+        duplicate = False
+        for sx, sy, sw, sh in seen_boxes:
+            ox = max(0, min(x+w, sx+sw) - max(x, sx))
+            oy = max(0, min(y+h, sy+sh) - max(y, sy))
+            if ox * oy > 0.8 * w * h:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        seen_boxes.append((x, y, w, h))
+
         circularity = 4 * math.pi * area / (peri ** 2 + 1e-6)
 
-        if circularity > 0.75:
+        if circularity > 0.72:
             kind = "oval"
         elif len(approx) <= 6:
             kind = "rect"
         else:
             kind = "line"
 
-        # Sample fill colour from centre
-        cx, cy = x + w // 2, y + h // 2
-        cx = min(cx, iw - 1)
-        cy = min(cy, ih - 1)
-        bgr = cv_img[cy, cx].tolist()
-        fill = (bgr[2], bgr[1], bgr[0])  # RGB
+        fill = _sample_region_color(cv_img, x + w//4, y + h//4, w//2, h//2)
+        # If fill is very dark, lighten it
+        if sum(fill) < 120:
+            fill = (fill[0]+80, fill[1]+80, fill[2]+80)
 
         shapes.append({
             "kind": kind,
-            "x": nx, "y": ny, "w": nw, "h": nh,
+            "x": x / iw, "y": y / ih,
+            "w": w / iw, "h": h / ih,
             "fill": fill,
+            "px_x": x, "px_y": y, "px_w": w, "px_h": h,
         })
 
     return shapes
@@ -159,91 +206,148 @@ def rebuild_diagram_on_slide(
     diagram_type: str,
     diagram_index: int,
     output_dir: str,
+    slide_w_emu: int = 9144000,
+    slide_h_emu: int = 5143500,
 ) -> dict:
     """
-    Replace the flat image shape on *slide* with editable PowerPoint shapes.
-    Returns a dict with 'preview_png' path.
+    Add editable shapes over (not replacing) the embedded picture.
+    The original image is kept so the slide still looks correct even if
+    reconstruction is imperfect.
     """
-    shape = img_data["shape"]
+    shape    = img_data["shape"]
     img: Image.Image = img_data["image"]
-    left = img_data["left"]
-    top = img_data["top"]
-    width = img_data["width"]
-    height = img_data["height"]
+    left     = img_data["left"]    # EMU
+    top      = img_data["top"]     # EMU
+    width    = img_data["width"]   # EMU
+    height   = img_data["height"]  # EMU
 
-    # ── 1. Extract information ───────────────────────────────────────────────
-    ocr_words = _ocr_image(img)
-    detected_shapes = _detect_shapes(img)
-    colors = _dominant_colors(img)
+    print(f"  Rebuilding {diagram_type}: pos=({left},{top}) size=({width}×{height}) EMU")
 
-    accent = colors[1] if len(colors) > 1 else (70, 130, 180)
-    # Make sure accent isn't near-white
-    if sum(accent) > 650:
-        accent = (70, 130, 180)
+    # ── 1. Detect shapes & OCR ───────────────────────────────────────────────
+    cv_img = cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
+    accent = _accent_color(cv_img)
+    detected = _detect_shapes(img)
+    ocr_words = _ocr_blocks(img)
 
-    # ── 2. Remove original image shape ──────────────────────────────────────
-    sp = shape._element
-    sp.getparent().remove(sp)
+    print(f"  Found {len(detected)} shapes, {len(ocr_words)} OCR words")
 
-    # ── 3. Add reconstructed shapes ─────────────────────────────────────────
+    # ── 2. DO NOT remove original image — keep as background ─────────────────
+    # (Removing it caused the slide to look completely broken)
+    # shape._element.getparent().remove(shape._element)  ← DISABLED
+
     slide_shapes = slide.shapes
 
-    if not detected_shapes:
-        # Fallback: draw a single placeholder box with OCR text
-        detected_shapes = [{"kind": "rect", "x": 0, "y": 0, "w": 1, "h": 1,
-                            "fill": (255, 255, 255)}]
+    # ── 3. Add reconstructed vector shapes (group at front) ──────────────────
+    if not detected:
+        # Fallback: add one transparent overlay box
+        detected = [{"kind": "rect", "x": 0.05, "y": 0.05,
+                     "w": 0.9, "h": 0.9, "fill": (255, 255, 255)}]
 
-    added = []
-    for s in detected_shapes[:30]:  # cap at 30 shapes
-        el = Emu(left + int(s["x"] * width))
-        et = Emu(top + int(s["y"] * height))
-        ew = Emu(max(int(s["w"] * width), 914400 // 10))   # min ~0.1 inch
-        eh = Emu(max(int(s["h"] * height), 914400 // 10))
+    added_shapes = []
+    for s in detected[:25]:
+        el = Emu(int(left + s["x"] * width))
+        et = Emu(int(top  + s["y"] * height))
+        ew = Emu(max(int(s["w"] * width),  int(slide_w_emu * 0.01)))
+        eh = Emu(max(int(s["h"] * height), int(slide_h_emu * 0.01)))
 
-        fill_rgb = RGBColor(*s["fill"])
+        fill_rgb = s["fill"]
+        # Skip near-white fills (background noise)
+        if sum(fill_rgb) > 720:
+            continue
 
         if s["kind"] == "oval":
-            new_shape = slide_shapes.add_shape(
-                9,  # MSO_SHAPE_TYPE oval
-                el, et, ew, eh
-            )
+            new_shape = slide_shapes.add_shape(9, el, et, ew, eh)
         else:
-            new_shape = slide_shapes.add_shape(
-                1,  # rectangle
-                el, et, ew, eh
-            )
+            new_shape = slide_shapes.add_shape(1, el, et, ew, eh)
 
-        # Style
         new_shape.fill.solid()
-        new_shape.fill.fore_color.rgb = fill_rgb
-        new_shape.line.color.rgb = RGBColor(*accent)
-        new_shape.line.width = Pt(1.5)
-        added.append(new_shape)
+        new_shape.fill.fore_color.rgb = RGBColor(*fill_rgb)
+        new_shape.line.color.rgb      = RGBColor(*accent)
+        new_shape.line.width          = Pt(1.5)
+        new_shape.fill.fore_color.rgb  # force write
+        # Set transparency on fill
+        from pptx.oxml.ns import qn
+        from lxml import etree
+        solidFill = new_shape.fill._xPr.find(qn("a:solidFill"))
+        if solidFill is not None:
+            srgb = solidFill.find(qn("a:srgbClr"))
+            if srgb is not None:
+                alpha = etree.SubElement(srgb, qn("a:alpha"))
+                alpha.set("val", "50000")  # 50% transparent
+
+        added_shapes.append(new_shape)
 
     # ── 4. Add OCR text boxes ────────────────────────────────────────────────
-    for word in ocr_words[:60]:
-        # Map pixel coords to EMU relative to shape position
-        px_scale_x = width / img.width
-        px_scale_y = height / img.height
-        tx = Emu(left + int(word["x"] * px_scale_x))
-        ty = Emu(top + int(word["y"] * px_scale_y))
-        tw = Emu(max(int(word["w"] * px_scale_x), 914400 // 5))
-        th = Emu(max(int(word["h"] * px_scale_y), 914400 // 10))
+    img_w, img_h = img.size
+    scale_x = width  / img_w
+    scale_y = height / img_h
+
+    # Group nearby words into lines
+    lines = _group_words_into_lines(ocr_words)
+
+    for line in lines[:40]:
+        words_in_line = line["words"]
+        combined_text = " ".join(w["text"] for w in words_in_line)
+        if not combined_text.strip():
+            continue
+
+        lx = min(w["x"] for w in words_in_line)
+        ly = min(w["y"] for w in words_in_line)
+        lw = max(w["x"] + w["w"] for w in words_in_line) - lx
+        lh = max(w["y"] + w["h"] for w in words_in_line) - ly
+
+        tx = Emu(int(left + lx * scale_x))
+        ty = Emu(int(top  + ly * scale_y))
+        tw = Emu(max(int(lw * scale_x), int(slide_w_emu * 0.05)))
+        th = Emu(max(int(lh * scale_y), int(slide_h_emu * 0.03)))
 
         txb = slide_shapes.add_textbox(tx, ty, tw, th)
-        tf = txb.text_frame
+        tf  = txb.text_frame
         tf.word_wrap = True
-        p = tf.paragraphs[0]
+        p   = tf.paragraphs[0]
         run = p.add_run()
-        run.text = word["text"]
-        run.font.size = Pt(10)
-        run.font.color.rgb = RGBColor(30, 30, 30)
-        p.alignment = PP_ALIGN.RIGHT  # default RTL-friendly
+        run.text = combined_text
 
-    # ── 5. Generate PNG preview ──────────────────────────────────────────────
-    preview_path = _make_preview(img, detected_shapes, ocr_words, diagram_index, output_dir)
+        # Font size proportional to box height
+        font_pt = max(8, min(24, int(lh * scale_y / 12700)))
+        run.font.size = Pt(font_pt)
+        run.font.color.rgb = RGBColor(20, 20, 20)
+
+        is_ar = any(w["is_arabic"] for w in words_in_line)
+        p.alignment = PP_ALIGN.RIGHT if is_ar else PP_ALIGN.LEFT
+
+        # RTL paragraph for Arabic
+        if is_ar:
+            from pptx.oxml.ns import qn
+            pPr = p._pPr
+            if pPr is None:
+                from lxml import etree
+                pPr = etree.SubElement(p._p, qn("a:pPr"))
+            pPr.set("rtl", "1")
+
+    # ── 5. Generate preview PNG ──────────────────────────────────────────────
+    preview_path = _make_preview(img, detected, ocr_words, diagram_index, output_dir)
 
     return {"preview_png": preview_path}
+
+
+def _group_words_into_lines(words: list[dict], y_tolerance: int = 8) -> list[dict]:
+    """Group OCR words that are on the same horizontal line."""
+    if not words:
+        return []
+    sorted_words = sorted(words, key=lambda w: (w["y"], w["x"]))
+    lines = []
+    current_line = [sorted_words[0]]
+
+    for word in sorted_words[1:]:
+        prev = current_line[-1]
+        if abs(word["y"] - prev["y"]) <= y_tolerance:
+            current_line.append(word)
+        else:
+            lines.append({"words": current_line})
+            current_line = [word]
+    lines.append({"words": current_line})
+    return lines
 
 
 def _make_preview(
@@ -253,27 +357,29 @@ def _make_preview(
     idx: int,
     output_dir: str,
 ) -> str:
-    """Draw a clean preview PNG showing the reconstructed layout."""
+    """Generate a preview showing original + detected shapes overlay."""
     w, h = original.size
-    canvas = Image.new("RGBA", (w, h), (255, 255, 255, 255))
-    draw = ImageDraw.Draw(canvas, "RGBA")
+    canvas = original.convert("RGBA").copy()
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
-    for s in shapes[:30]:
+    for s in shapes[:25]:
         x0 = int(s["x"] * w)
         y0 = int(s["y"] * h)
         x1 = x0 + int(s["w"] * w)
         y1 = y0 + int(s["h"] * h)
-        fill = (*s["fill"], 180)
-        outline = (50, 50, 50, 255)
+        fill = (*s["fill"], 80)
+        outline = (255, 0, 0, 200)
         if s["kind"] == "oval":
             draw.ellipse([x0, y0, x1, y1], fill=fill, outline=outline, width=2)
         else:
             draw.rectangle([x0, y0, x1, y1], fill=fill, outline=outline, width=2)
 
     for word in words[:60]:
-        draw.text((word["x"] + 2, word["y"] + 2), word["text"],
-                  fill=(20, 20, 20, 255))
+        draw.text((word["x"] + 1, word["y"] + 1), word["text"][:30],
+                  fill=(0, 0, 180, 230))
 
-    out_path = str(Path(output_dir) / f"preview_diagram_{idx}.png")
-    canvas.save(out_path)
+    combined = Image.alpha_composite(canvas, overlay)
+    out_path = str(Path(output_dir) / f"preview_{idx}.png")
+    combined.convert("RGB").save(out_path)
     return out_path
