@@ -1,0 +1,59 @@
+name: Process PPTX
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Job ID from Supabase'
+        required: true
+      file_path:
+        description: 'Path of uploaded file in Supabase Storage'
+        required: true
+
+env:
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-ara \
+            libglib2.0-0 libsm6 libxext6 libxrender-dev libgl1
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download PPTX from Supabase Storage
+        run: |
+          python pipeline/download_input.py \
+            --job-id "${{ github.event.inputs.job_id }}" \
+            --file-path "${{ github.event.inputs.file_path }}"
+
+      - name: Process PPTX
+        run: |
+          python pipeline/run_pipeline.py \
+            --job-id "${{ github.event.inputs.job_id }}"
+
+      - name: Upload results to Supabase
+        run: |
+          python pipeline/upload_results.py \
+            --job-id "${{ github.event.inputs.job_id }}"
