@@ -103,7 +103,14 @@ btnUpload.addEventListener('click', async () => {
 
   try {
     const jobId    = crypto.randomUUID();
-    const filePath = `${jobId}/${selectedFile.name}`;
+    // Sanitize filename — Supabase Storage rejects non-ASCII characters
+    const safeExt  = selectedFile.name.toLowerCase().endsWith('.pptx') ? '.pptx' : '.pptx';
+    const safeName = selectedFile.name
+      .replace(/[^\x00-\x7F]/g, '')   // remove non-ASCII (Arabic etc.)
+      .replace(/[^a-zA-Z0-9._-]/g, '_') // replace special chars
+      .replace(/^_+|_+$/g, '')          // trim underscores
+      || 'upload';
+    const filePath = `${jobId}/${safeName}${safeName.endsWith('.pptx') ? '' : safeExt}`;
 
     // 1. Upload file to Supabase Storage
     setProgress(5, 'رفع الملف إلى Supabase Storage…');
