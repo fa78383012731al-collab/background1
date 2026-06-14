@@ -1,0 +1,11 @@
+streamlit>=1.35.0
+python-pptx>=0.6.23
+Pillow>=10.3.0
+opencv-python-headless>=4.9.0.80
+numpy>=1.26.0
+svgwrite>=1.4.3
+pytesseract>=0.3.10
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
+requests>=2.32.0
+lxml>=5.2.0
