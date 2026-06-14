@@ -1,0 +1,37 @@
+Title: الضغط التنافسي: قوى بورتر الخمسة
+
+Center Element:
+- Shape: Circle
+- Text: مستشفى الشاعر الخاص
+- Color: Dark Blue (#1a5276 or similar)
+
+Box 1 (Top Left):
+- Header Text: حدة المنافسة (3.5/5)
+- Body Text: منافسة قوية بين 3 منشآت خاصة و6 حكومية حول السعر والموقع. (الرقمنة هي المهرب الوحيد).
+- Header Color: Dark Blue
+
+Box 2 (Top Right):
+- Header Text: قوة المشترين (4/5)
+- Body Text: وعي المريض يرتفع، وحساسيته للجودة تتفوق على السعر في حال توفر التجربة الممتازة.
+- Header Color: Medium Blue
+
+Box 3 (Middle Right):
+- Header Text: قوة الموردين (3/5)
+- Body Text: قوة تفاوضية عالية للكوادر الطبية المتخصصة.
+- Header Color: Light Blue
+
+Box 4 (Bottom Right):
+- Header Text: الداخلون الجدد (3/5)
+- Body Text: حواجز دخول مالية عالية (30 مليون+)، لكن التهديد قادم من العيادات الرقمية.
+- Header Color: Green (#27ae60 or similar)
+
+Box 5 (Bottom Left):
+- Header Text: المنتجات البديلة (2.5/5)
+- Body Text: الطب التقليدي، والسفر للعلاج (المريض يفضل الرعاية المحلية إذا توفرت الجودة).
+- Header Color: Teal/Cyan (#16a085 or similar)
+
+Layout:
+- Central circle connected by angled lines to 5 surrounding rectangular boxes.
+- Boxes have a colored header bar and a white body.
+- Background: Transparent (as requested).
+- Style: Clean, academic, vector-based.
