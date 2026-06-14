@@ -14,28 +14,22 @@ const sb = {
     'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
   },
 
-  async uploadFile(path, file) {
-    const r = await fetch(
-      `${SUPABASE_URL}/storage/v1/object/${BUCKET_INPUT}/${path}`,
-      {
-        method: 'POST',
-        headers: { ...this.headers, 'x-upsert': 'true', 'Content-Type': file.type || 'application/octet-stream' },
-        body: file,
-      }
-    );
-    if (!r.ok) throw new Error(`Storage upload failed: ${r.status} ${await r.text()}`);
-    return await r.json();
-  },
+  // Upload file + create job + trigger GH Actions — all via Edge Function (uses service key)
+  async uploadAndTrigger(file) {
+    const jobId = crypto.randomUUID();
+    const form  = new FormData();
+    form.append('file',     file, file.name);
+    form.append('job_id',   jobId);
+    form.append('filename', file.name);
 
-  async createJob(data) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/jobs`, {
-      method: 'POST',
-      headers: { ...this.headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
-      body: JSON.stringify(data),
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/rapid-responder`, {
+      method:  'POST',
+      headers: { 'apikey': SUPABASE_ANON_KEY },
+      body:    form,
     });
-    if (!r.ok) throw new Error(`Job create failed: ${r.status} ${await r.text()}`);
-    const rows = await r.json();
-    return rows[0];
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `Upload failed: ${r.status}`);
+    return data; // { success, job_id, file_path, job }
   },
 
   async getJob(jobId) {
@@ -48,21 +42,6 @@ const sb = {
     return rows[0] || null;
   },
 };
-
-// ── GitHub Actions trigger ─────────────────────────────────────────────────
-async function triggerGitHubAction(jobId, filePath) {
-  // We call our Supabase Edge Function which holds the GITHUB_TOKEN securely
-  const r = await fetch(`${SUPABASE_URL}/functions/v1/rapid-responder`, {
-    method: 'POST',
-    headers: { ...sb.headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: jobId, file_path: filePath }),
-  });
-  if (!r.ok) {
-    const txt = await r.text();
-    throw new Error(`Trigger failed: ${r.status} — ${txt}`);
-  }
-  return await r.json();
-}
 
 // ── State ──────────────────────────────────────────────────────────────────
 let state = { jobId: null, polling: null, startTime: null };
@@ -113,41 +92,24 @@ btnUpload.addEventListener('click', async () => {
   btnUpload.innerHTML = '<span class="spinner"></span> جارٍ الرفع…';
 
   try {
-    // 1. Upload to Supabase Storage
-    const jobId    = crypto.randomUUID();
-    const filePath = `${jobId}/${selectedFile.name}`;
-    setProgress(5, 'رفع الملف إلى Supabase Storage…');
-    await sb.uploadFile(filePath, selectedFile);
+    // Single call: upload + create job + trigger GH Actions (all via Edge Function)
+    setProgress(5, 'رفع الملف…');
+    const result = await sb.uploadAndTrigger(selectedFile);
 
-    // 2. Create job record in DB
-    setProgress(10, 'إنشاء سجل الوظيفة…');
-    const job = await sb.createJob({
-      id:          jobId,
-      status:      'queued',
-      progress:    10,
-      filename:    selectedFile.name,
-      file_path:   filePath,
-      log:         'Queued. Triggering GitHub Actions…',
-    });
-
-    state.jobId    = job.id;
+    state.jobId     = result.job_id;
     state.startTime = Date.now();
     tagFilename.textContent = selectedFile.name;
 
-    // 3. Show processing section
+    // Show processing section
     secProcess.style.display = '';
     secProcess.scrollIntoView({ behavior: 'smooth' });
 
-    // 4. Trigger GitHub Actions via Edge Function
-    setProgress(12, 'تشغيل GitHub Actions…');
+    setProgress(15, '✅ الملف وصل — GitHub Actions يعالج الآن…');
     tagStatus.textContent = '🚀 GitHub Actions يعمل…';
     tagStatus.className   = 'tag tag-blue';
 
-    await triggerGitHubAction(job.id, filePath);
-    setProgress(15, 'GitHub Actions انطلق! جارٍ المعالجة…');
-
-    // 5. Start polling
-    startPolling(job.id);
+    // Start polling
+    startPolling(result.job_id);
 
   } catch (err) {
     showError(err.message);
