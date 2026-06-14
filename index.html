@@ -12,30 +12,14 @@
       <div class="logo">📊</div>
       <div>
         <h1>PPTX Diagram Reconstructor</h1>
-        <p class="subtitle">أعد بناء مخططات PowerPoint كعناصر قابلة للتعديل — SVG · PPTX · PNG</p>
+        <p class="subtitle">أعد بناء مخططات PowerPoint كعناصر قابلة للتعديل — مجاني 100٪ عبر GitHub &amp; Supabase</p>
       </div>
     </div>
   </header>
 
   <main>
 
-    <!-- ── Backend config (shown on GitHub Pages) ─────────────────────── -->
-    <section class="card" id="sec-config" style="display:none">
-      <h2>⚙ إعداد الخادم</h2>
-      <p style="color:var(--muted);font-size:.9rem;margin-bottom:1rem">
-        هذه الواجهة مستضافة على GitHub Pages وتحتاج إلى رابط الخادم المنشور.
-        انسخ رابط تطبيق Replit المنشور والصقه هنا.
-      </p>
-      <div class="field-group">
-        <label for="backend-url-input">رابط الخادم (Backend URL)</label>
-        <input id="backend-url-input" type="url" class="text-input"
-               placeholder="https://your-app.replit.app" />
-      </div>
-      <button class="btn btn-primary" id="btn-save-backend">💾 حفظ الرابط</button>
-      <div id="config-status" style="margin-top:.5rem;font-size:.85rem;color:var(--success)"></div>
-    </section>
-
-    <!-- ── Step 1: Upload ─────────────────────────────────────────────── -->
+    <!-- ── Step 1: Upload ─────────────────────────────────────────── -->
     <section class="card" id="sec-upload">
       <h2><span class="step-badge">1</span> رفع الملف</h2>
       <div class="drop-zone" id="drop-zone">
@@ -45,33 +29,35 @@
         <input type="file" id="file-input" accept=".pptx" hidden />
         <p class="drop-hint" id="file-name">لم يُختر ملف بعد</p>
       </div>
-      <button class="btn btn-primary" id="btn-upload" disabled>⬆ رفع الملف</button>
+      <button class="btn btn-primary" id="btn-upload" disabled>
+        ⬆ رفع وبدء المعالجة
+      </button>
     </section>
 
-    <!-- ── Step 2: Process ────────────────────────────────────────────── -->
+    <!-- ── Step 2: Processing ─────────────────────────────────────── -->
     <section class="card" id="sec-process" style="display:none">
-      <h2><span class="step-badge">2</span> التحليل وإعادة البناء</h2>
+      <h2><span class="step-badge">2</span> المعالجة جارية…</h2>
       <div class="info-row">
         <span class="tag" id="tag-filename"></span>
-        <span class="tag tag-green">✅ تم الرفع</span>
+        <span class="tag tag-blue" id="tag-status">⏳ في قائمة الانتظار</span>
       </div>
-      <button class="btn btn-primary" id="btn-process">▶ بدء التحليل</button>
-      <div class="progress-wrap" id="progress-wrap" style="display:none">
+      <div class="progress-wrap">
         <div class="progress-bar-bg">
           <div class="progress-bar-fill" id="progress-fill"></div>
         </div>
         <span id="progress-pct">0%</span>
       </div>
-      <div class="log-box" id="log-box" style="display:none">
+      <div class="log-box">
         <div class="log-header">
           <span>📋 سجل التنفيذ</span>
-          <button class="btn-tiny" id="btn-clear-log">مسح</button>
+          <span id="log-eta" style="font-size:.78rem;color:#64748b"></span>
         </div>
         <pre id="log-content"></pre>
       </div>
+      <p class="hint-text">⚙ المعالجة تعمل على GitHub Actions — قد تستغرق 1-3 دقائق</p>
     </section>
 
-    <!-- ── Step 3: Results ────────────────────────────────────────────── -->
+    <!-- ── Step 3: Results ────────────────────────────────────────── -->
     <section class="card" id="sec-results" style="display:none">
       <h2><span class="step-badge">3</span> النتائج</h2>
       <div class="stats-row"     id="stats-row"></div>
@@ -82,27 +68,18 @@
         <span id="error-msg"></span>
         <button class="btn btn-outline" id="btn-retry">إعادة المحاولة</button>
       </div>
-    </section>
-
-    <!-- ── Step 4: GitHub ─────────────────────────────────────────────── -->
-    <section class="card" id="sec-github" style="display:none">
-      <h2><span class="step-badge">4</span> رفع إلى GitHub</h2>
-      <div class="field-group">
-        <label for="repo-url">رابط المستودع</label>
-        <input id="repo-url" type="url" class="text-input"
-               value="https://github.com/fa78383012731al-collab/background1"
-               placeholder="https://github.com/owner/repo" />
-      </div>
-      <button class="btn btn-github" id="btn-github">🚀 رفع إلى GitHub</button>
-      <div class="github-result" id="github-result"></div>
+      <button class="btn btn-outline" id="btn-new" style="margin-top:1rem">
+        ↩ معالجة ملف جديد
+      </button>
     </section>
 
   </main>
 
   <footer>
     <p>
-      PPTX Diagram Reconstructor &nbsp;·&nbsp; دعم عربي كامل &nbsp;·&nbsp;
+      PPTX Diagram Reconstructor &nbsp;·&nbsp; مجاني 100٪ &nbsp;·&nbsp;
       <a href="https://github.com/fa78383012731al-collab/background1" target="_blank" rel="noopener">GitHub</a>
+      &nbsp;·&nbsp; Supabase Storage
     </p>
   </footer>
 
