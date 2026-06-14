@@ -19,7 +19,22 @@
 
   <main>
 
-    <!-- ── Step 1: Upload ──────────────────────────────────── -->
+    <!-- ── Backend config (shown only on GitHub Pages) ───────────────── -->
+    <section class="card" id="sec-config" style="display:none">
+      <h2>⚙ إعداد الخادم</h2>
+      <p style="color:var(--muted);font-size:.9rem;margin-bottom:1rem">
+        هذه الواجهة مستضافة على GitHub Pages وتحتاج إلى رابط الخادم المنشور
+        (Replit أو أي استضافة أخرى).
+      </p>
+      <div class="field-group">
+        <label for="backend-url-input">رابط الخادم (Backend URL)</label>
+        <input id="backend-url-input" type="url" class="text-input"
+               placeholder="https://your-app.replit.app" />
+      </div>
+      <button class="btn btn-primary" id="btn-save-backend">حفظ</button>
+    </section>
+
+    <!-- ── Step 1: Upload ──────────────────────────────────────────────── -->
     <section class="card" id="sec-upload">
       <h2><span class="step-badge">1</span> رفع الملف</h2>
 
@@ -36,7 +51,7 @@
       </button>
     </section>
 
-    <!-- ── Step 2: Process ─────────────────────────────────── -->
+    <!-- ── Step 2: Process ─────────────────────────────────────────────── -->
     <section class="card" id="sec-process" style="display:none">
       <h2><span class="step-badge">2</span> التحليل وإعادة البناء</h2>
 
@@ -45,11 +60,8 @@
         <span class="tag tag-green" id="tag-uploaded">✅ تم الرفع</span>
       </div>
 
-      <button class="btn btn-primary" id="btn-process">
-        ▶ بدء التحليل
-      </button>
+      <button class="btn btn-primary" id="btn-process">▶ بدء التحليل</button>
 
-      <!-- Progress -->
       <div class="progress-wrap" id="progress-wrap" style="display:none">
         <div class="progress-bar-bg">
           <div class="progress-bar-fill" id="progress-fill"></div>
@@ -57,7 +69,6 @@
         <span id="progress-pct">0%</span>
       </div>
 
-      <!-- Logs -->
       <div class="log-box" id="log-box" style="display:none">
         <div class="log-header">
           <span>📋 سجل التنفيذ</span>
@@ -67,46 +78,43 @@
       </div>
     </section>
 
-    <!-- ── Step 3: Results ─────────────────────────────────── -->
+    <!-- ── Step 3: Results ─────────────────────────────────────────────── -->
     <section class="card" id="sec-results" style="display:none">
       <h2><span class="step-badge">3</span> النتائج</h2>
 
-      <div class="stats-row" id="stats-row"></div>
-
-      <!-- Preview thumbnails -->
+      <div class="stats-row"     id="stats-row"></div>
       <div class="previews-grid" id="previews-grid"></div>
+      <div class="download-row"  id="download-row"></div>
 
-      <!-- Downloads -->
-      <div class="download-row" id="download-row"></div>
-
-      <!-- Error banner -->
       <div class="error-banner" id="error-banner" style="display:none">
-        <strong>⚠ خطأ:</strong> <span id="error-msg"></span>
+        <strong>⚠ خطأ:</strong>
+        <span id="error-msg"></span>
         <button class="btn btn-outline" id="btn-retry">إعادة المحاولة</button>
       </div>
     </section>
 
-    <!-- ── Step 4: GitHub ──────────────────────────────────── -->
+    <!-- ── Step 4: GitHub ──────────────────────────────────────────────── -->
     <section class="card" id="sec-github" style="display:none">
       <h2><span class="step-badge">4</span> رفع إلى GitHub</h2>
 
       <div class="field-group">
         <label for="repo-url">رابط المستودع</label>
         <input id="repo-url" type="url" class="text-input"
-          value="https://github.com/fa78383012731al-collab/background1"
-          placeholder="https://github.com/owner/repo" />
+               value="https://github.com/fa78383012731al-collab/background1"
+               placeholder="https://github.com/owner/repo" />
       </div>
 
-      <button class="btn btn-github" id="btn-github">
-        🚀 رفع إلى GitHub
-      </button>
+      <button class="btn btn-github" id="btn-github">🚀 رفع إلى GitHub</button>
       <div class="github-result" id="github-result"></div>
     </section>
 
   </main>
 
   <footer>
-    <p>PPTX Diagram Reconstructor &nbsp;·&nbsp; دعم عربي كامل &nbsp;·&nbsp; مفتوح المصدر</p>
+    <p>
+      PPTX Diagram Reconstructor &nbsp;·&nbsp; دعم عربي كامل &nbsp;·&nbsp;
+      <a href="https://github.com/fa78383012731al-collab/background1" target="_blank" rel="noopener">GitHub</a>
+    </p>
   </footer>
 
   <script src="app.js"></script>
