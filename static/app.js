@@ -14,22 +14,28 @@ const sb = {
     'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
   },
 
-  // Upload file + create job + trigger GH Actions — all via Edge Function (uses service key)
-  async uploadAndTrigger(file) {
-    const jobId = crypto.randomUUID();
-    const form  = new FormData();
-    form.append('file',     file, file.name);
-    form.append('job_id',   jobId);
-    form.append('filename', file.name);
+  async uploadFile(path, file) {
+    const r = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${BUCKET_INPUT}/${path}`,
+      {
+        method: 'POST',
+        headers: { ...this.headers, 'x-upsert': 'true', 'Content-Type': 'application/octet-stream' },
+        body: file,
+      }
+    );
+    if (!r.ok) throw new Error(`Storage upload failed: ${r.status} ${await r.text()}`);
+    return await r.json();
+  },
 
-    const r = await fetch(`${SUPABASE_URL}/functions/v1/rapid-responder`, {
-      method:  'POST',
-      headers: { 'apikey': SUPABASE_ANON_KEY },
-      body:    form,
+  async createJob(data) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/jobs`, {
+      method: 'POST',
+      headers: { ...this.headers, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+      body: JSON.stringify(data),
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || `Upload failed: ${r.status}`);
-    return data; // { success, job_id, file_path, job }
+    if (!r.ok) throw new Error(`Job create failed: ${r.status} ${await r.text()}`);
+    const rows = await r.json();
+    return rows[0];
   },
 
   async getJob(jobId) {
@@ -92,24 +98,49 @@ btnUpload.addEventListener('click', async () => {
   btnUpload.innerHTML = '<span class="spinner"></span> جارٍ الرفع…';
 
   try {
-    // Single call: upload + create job + trigger GH Actions (all via Edge Function)
-    setProgress(5, 'رفع الملف…');
-    const result = await sb.uploadAndTrigger(selectedFile);
+    const jobId    = crypto.randomUUID();
+    const filePath = `${jobId}/${selectedFile.name}`;
 
-    state.jobId     = result.job_id;
+    // 1. Upload file to Supabase Storage
+    setProgress(5, 'رفع الملف إلى Supabase Storage…');
+    await sb.uploadFile(filePath, selectedFile);
+
+    // 2. Create job record
+    setProgress(10, 'إنشاء سجل الوظيفة…');
+    const job = await sb.createJob({
+      id:        jobId,
+      status:    'queued',
+      progress:  10,
+      filename:  selectedFile.name,
+      file_path: filePath,
+      log:       'Queued. Triggering GitHub Actions…',
+    });
+
+    state.jobId     = job.id;
     state.startTime = Date.now();
     tagFilename.textContent = selectedFile.name;
 
-    // Show processing section
+    // 3. Show processing section
     secProcess.style.display = '';
     secProcess.scrollIntoView({ behavior: 'smooth' });
 
-    setProgress(15, '✅ الملف وصل — GitHub Actions يعالج الآن…');
+    // 4. Trigger GitHub Actions via Edge Function
+    setProgress(12, 'تشغيل GitHub Actions…');
     tagStatus.textContent = '🚀 GitHub Actions يعمل…';
     tagStatus.className   = 'tag tag-blue';
 
-    // Start polling
-    startPolling(result.job_id);
+    const trigR = await fetch(`${SUPABASE_URL}/functions/v1/rapid-responder`, {
+      method:  'POST',
+      headers: { ...sb.headers, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ job_id: job.id, file_path: filePath }),
+    });
+    if (!trigR.ok) {
+      const t = await trigR.text();
+      throw new Error(`Trigger failed: ${trigR.status} — ${t}`);
+    }
+
+    setProgress(15, 'GitHub Actions انطلق! جارٍ المعالجة…');
+    startPolling(job.id);
 
   } catch (err) {
     showError(err.message);
