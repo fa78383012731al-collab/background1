@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PPTX Diagram Reconstructor</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="logo">📊</div>
+      <div>
+        <h1>PPTX Diagram Reconstructor</h1>
+        <p class="subtitle">أعد بناء مخططات PowerPoint كعناصر قابلة للتعديل — SVG · PPTX · PNG</p>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ── Step 1: Upload ──────────────────────────────────── -->
+    <section class="card" id="sec-upload">
+      <h2><span class="step-badge">1</span> رفع الملف</h2>
+
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-icon">📁</div>
+        <p>اسحب ملف <strong>.pptx</strong> هنا أو</p>
+        <label class="btn btn-outline" for="file-input">تصفح…</label>
+        <input type="file" id="file-input" accept=".pptx" hidden />
+        <p class="drop-hint" id="file-name">لم يُختر ملف بعد</p>
+      </div>
+
+      <button class="btn btn-primary" id="btn-upload" disabled>
+        ⬆ رفع الملف
+      </button>
+    </section>
+
+    <!-- ── Step 2: Process ─────────────────────────────────── -->
+    <section class="card" id="sec-process" style="display:none">
+      <h2><span class="step-badge">2</span> التحليل وإعادة البناء</h2>
+
+      <div class="info-row">
+        <span class="tag" id="tag-filename"></span>
+        <span class="tag tag-green" id="tag-uploaded">✅ تم الرفع</span>
+      </div>
+
+      <button class="btn btn-primary" id="btn-process">
+        ▶ بدء التحليل
+      </button>
+
+      <!-- Progress -->
+      <div class="progress-wrap" id="progress-wrap" style="display:none">
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progress-fill"></div>
+        </div>
+        <span id="progress-pct">0%</span>
+      </div>
+
+      <!-- Logs -->
+      <div class="log-box" id="log-box" style="display:none">
+        <div class="log-header">
+          <span>📋 سجل التنفيذ</span>
+          <button class="btn-tiny" id="btn-clear-log">مسح</button>
+        </div>
+        <pre id="log-content"></pre>
+      </div>
+    </section>
+
+    <!-- ── Step 3: Results ─────────────────────────────────── -->
+    <section class="card" id="sec-results" style="display:none">
+      <h2><span class="step-badge">3</span> النتائج</h2>
+
+      <div class="stats-row" id="stats-row"></div>
+
+      <!-- Preview thumbnails -->
+      <div class="previews-grid" id="previews-grid"></div>
+
+      <!-- Downloads -->
+      <div class="download-row" id="download-row"></div>
+
+      <!-- Error banner -->
+      <div class="error-banner" id="error-banner" style="display:none">
+        <strong>⚠ خطأ:</strong> <span id="error-msg"></span>
+        <button class="btn btn-outline" id="btn-retry">إعادة المحاولة</button>
+      </div>
+    </section>
+
+    <!-- ── Step 4: GitHub ──────────────────────────────────── -->
+    <section class="card" id="sec-github" style="display:none">
+      <h2><span class="step-badge">4</span> رفع إلى GitHub</h2>
+
+      <div class="field-group">
+        <label for="repo-url">رابط المستودع</label>
+        <input id="repo-url" type="url" class="text-input"
+          value="https://github.com/fa78383012731al-collab/background1"
+          placeholder="https://github.com/owner/repo" />
+      </div>
+
+      <button class="btn btn-github" id="btn-github">
+        🚀 رفع إلى GitHub
+      </button>
+      <div class="github-result" id="github-result"></div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>PPTX Diagram Reconstructor &nbsp;·&nbsp; دعم عربي كامل &nbsp;·&nbsp; مفتوح المصدر</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
